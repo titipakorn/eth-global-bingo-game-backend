@@ -260,7 +260,7 @@ async fn get_card(
     chain_name: String,
     request: Json<PurchaseCardRequest>,
     chain_states: &State<Arc<Mutex<HashMap<String, ChainState>>>>,
-) -> Result<Json<ApiResponse<UserCard>>, Status> {
+) -> Result<Json<ApiResponse<[u32; 25]>>, Status> {
     let chain_states = chain_states.lock().await;
     println!("Chain states: {:?}", chain_states);
     let state = chain_states.get(&chain_name).ok_or(Status::NotFound)?;
@@ -287,7 +287,7 @@ async fn get_card(
             Ok(Json(ApiResponse {
                 success: true,
                 message: "Get Card".to_string(),
-                data: Some(UserCard { numbers: cards }),
+                data: Some(cards),
             }))
         }
         Err(e) => Ok(Json(ApiResponse {
@@ -357,19 +357,6 @@ fn extract_card_numbers_from_receipt(receipt: &TransactionReceipt) -> Result<[u3
         }
     }
     Err("Failed to extract card numbers from receipt".to_string())
-}
-
-fn parse_card_numbers(numbers: &[u8; 25]) -> [[u8; 5]; 5] {
-    let mut card = [[0u8; 5]; 5];
-
-    // Convert flat array to 5x5 grid
-    for (i, chunk) in numbers.chunks(5).enumerate() {
-        for (j, &num) in chunk.iter().enumerate() {
-            card[i][j] = num;
-        }
-    }
-
-    card
 }
 
 #[launch]
