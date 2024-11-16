@@ -9,17 +9,17 @@ use eyre::Result;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rocket::fairing::{Fairing, Info, Kind};
+use rocket::http::Method;
 use rocket::http::{Header, Status};
 use rocket::Request;
 use rocket::{get, launch, post, response::Response, routes, serde::json::Json, State};
+use rocket_cors::{AllowedOrigins, CorsOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
-
-pub struct CORS;
 
 // Background task control structure
 pub struct BackgroundSubmitter {
@@ -43,27 +43,6 @@ impl BackgroundSubmitter {
         self.is_running.store(false, Ordering::SeqCst);
     }
 }
-
-#[rocket::async_trait]
-impl Fairing for CORS {
-    fn info(&self) -> Info {
-        Info {
-            name: "Add CORS headers to responses",
-            kind: Kind::Response,
-        }
-    }
-
-    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response) {
-        response.set_header(Header::new("Access-Control-Allow-Origin", "*"));
-        response.set_header(Header::new(
-            "Access-Control-Allow-Methods",
-            "POST, GET, PATCH, OPTIONS",
-        ));
-        response.set_header(Header::new("Access-Control-Allow-Headers", "*"));
-        response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
-    }
-}
-
 #[rocket::async_trait]
 impl Fairing for BackgroundFairing {
     fn info(&self) -> Info {
@@ -532,12 +511,22 @@ async fn rocket() -> _ {
     // Get the fairing
     let fairing = background_submitter.get_fairing();
 
+    let cors = CorsOptions::default()
+        .allowed_origins(AllowedOrigins::all())
+        .allowed_methods(
+            vec![Method::Get, Method::Post, Method::Patch]
+                .into_iter()
+                .map(From::from)
+                .collect(),
+        )
+        .allow_credentials(true);
+
     // Launch Rocket
     rocket::build()
-        .attach(CORS)
         .manage(chain_states)
-        .attach(fairing)
+        .attach(cors.to_cors().unwrap())
         .mount("/api", routes![get_game_state, purchase_card, get_card])
+        .attach(fairing)
 }
 
 // Graceful shutdown handler (add this to your main function if you're not using #[launch])
