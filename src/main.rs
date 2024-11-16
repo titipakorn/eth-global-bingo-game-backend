@@ -8,12 +8,147 @@ use ethers::{
 use eyre::Result;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rocket::http::Status;
-use rocket::{get, launch, post, routes, serde::json::Json, State};
+use rocket::fairing::{Fairing, Info, Kind};
+use rocket::http::{Header, Status};
+use rocket::Request;
+use rocket::{get, launch, post, response::Response, routes, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
+
+pub struct CORS;
+
+// Background task control structure
+pub struct BackgroundSubmitter {
+    is_running: Arc<AtomicBool>,
+}
+
+impl BackgroundSubmitter {
+    pub fn new() -> Self {
+        Self {
+            is_running: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn get_fairing(&self) -> BackgroundFairing {
+        BackgroundFairing {
+            is_running: self.is_running.clone(),
+        }
+    }
+
+    pub fn stop(&self) {
+        self.is_running.store(false, Ordering::SeqCst);
+    }
+}
+
+#[rocket::async_trait]
+impl Fairing for CORS {
+    fn info(&self) -> Info {
+        Info {
+            name: "Add CORS headers to responses",
+            kind: Kind::Response,
+        }
+    }
+
+    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response) {
+        response.set_header(Header::new("Access-Control-Allow-Origin", "*"));
+        response.set_header(Header::new(
+            "Access-Control-Allow-Methods",
+            "POST, GET, PATCH, OPTIONS",
+        ));
+        response.set_header(Header::new("Access-Control-Allow-Headers", "*"));
+        response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
+    }
+}
+
+#[rocket::async_trait]
+impl Fairing for BackgroundFairing {
+    fn info(&self) -> Info {
+        Info {
+            name: "Background Number Submitter",
+            kind: Kind::Ignite,
+        }
+    }
+
+    async fn on_ignite(
+        &self,
+        rocket: rocket::Rocket<rocket::Build>,
+    ) -> Result<rocket::Rocket<rocket::Build>, rocket::Rocket<rocket::Build>> {
+        let chain_states = rocket
+            .state::<Arc<Mutex<HashMap<String, ChainState>>>>()
+            .unwrap()
+            .clone();
+        let chain_states = chain_states.lock().await;
+        for (chain_id, state) in chain_states.iter() {
+            let app_state: AppState = state.app_state.clone();
+            let contract = app_state.contract.clone();
+            let is_running = self.is_running.clone();
+
+            tokio::spawn({
+                let chain_id = chain_id.clone();
+                async move {
+                    println!(
+                        "Starting background number submission task for chain {}...",
+                        chain_id
+                    );
+                    while is_running.load(Ordering::SeqCst) {
+                        match submit_number(&contract).await {
+                            Ok(_) => {
+                                println!("Successfully submitted number for chain {}", chain_id)
+                            }
+                            Err(e) => {
+                                eprintln!("Error submitting number for chain {}: {}", chain_id, e)
+                            }
+                        }
+                        sleep(Duration::from_secs(15)).await;
+                    }
+                    println!("Background task stopped for chain {}", chain_id);
+                }
+            });
+        }
+        Ok(rocket)
+    }
+}
+
+async fn submit_number(
+    contract: &Arc<BingoGame<SignerMiddleware<Provider<Http>, LocalWallet>>>,
+) -> Result<()> {
+    let is_game_started = contract.is_game_started().call().await?;
+    if is_game_started {
+        // Generate random number between 1 and 99
+        let mut rng = StdRng::from_entropy();
+        let random_number = rng.gen::<u8>();
+        let number = (random_number % 99) + 1;
+        println!("Submitting number: {}", number);
+
+        // Submit transaction
+        let number_u256 = U256::from(number);
+        let submit_call = contract.submit_drawn_number(number_u256);
+        let tx = submit_call.send().await?;
+
+        // Wait for confirmation
+        let receipt = tx.await?;
+        if let Some(receipt) = receipt {
+            println!(
+                "Number {} submitted in block: {:?}",
+                number, receipt.block_number
+            );
+        } else {
+            println!("Number {} submitted but receipt is None", number);
+        }
+    }
+
+    Ok(())
+}
+
+// Rocket Fairing for background task
+#[derive(Debug)]
+pub struct BackgroundFairing {
+    is_running: Arc<AtomicBool>,
+}
 
 // Define a struct to hold the state for each chain
 #[derive(Debug)]
@@ -44,9 +179,11 @@ impl ChainState {
 abigen!(
     BingoGame,
     r#"[
+        function submitDrawnNumber(uint256 number) external
         function assignCard(address player, uint256 randomSeed) external returns (uint32[25])
         function getCurrentGameState() external view returns (uint256 startTime, uint256 lastDrawTime, uint256 numberCount, uint256[] drawnNumbers, bool isEnded, uint256 playerCount, bool isStarted)
         function getPlayerCards(address player) external view returns (uint32[25] storedNumbers)
+        function isGameStarted() external view returns (bool)
     ]"#
 );
 
@@ -54,11 +191,6 @@ abigen!(
 struct BingoCard {
     numbers: [u32; 25], // 5x5 Bingo card
     transaction_hash: String,
-}
-
-#[derive(Debug, Serialize)]
-struct UserCard {
-    numbers: [u32; 25],
 }
 
 #[derive(Debug, Serialize)]
@@ -80,7 +212,7 @@ struct ApiResponse<T> {
     data: Option<T>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct AppState {
     contract: Arc<BingoGame<SignerMiddleware<Provider<Http>, LocalWallet>>>,
 }
@@ -394,8 +526,25 @@ async fn rocket() -> _ {
     // Wrap the chain states in an Arc and Mutex for shared access
     let chain_states = Arc::new(Mutex::new(chain_states));
 
+    // Create the background submitter
+    let background_submitter = BackgroundSubmitter::new();
+
+    // Get the fairing
+    let fairing = background_submitter.get_fairing();
+
     // Launch Rocket
     rocket::build()
+        .attach(CORS)
         .manage(chain_states)
+        .attach(fairing)
         .mount("/api", routes![get_game_state, purchase_card, get_card])
+}
+
+// Graceful shutdown handler (add this to your main function if you're not using #[launch])
+pub async fn shutdown_handler(background_submitter: &BackgroundSubmitter) {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for ctrl-c");
+    println!("Shutdown signal received, stopping background task...");
+    background_submitter.stop();
 }
