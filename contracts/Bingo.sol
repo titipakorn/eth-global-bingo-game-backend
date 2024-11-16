@@ -75,9 +75,7 @@ contract BingoGame is Pausable, Ownable {
     function _resetUsedNumbers() private {
         // Reset only the possible bingo numbers
         for(uint256 i = 1; i <= MAX_NUMBER; i++) {
-            if(usedNumbers[i]) {  // Only reset if it was used
-                usedNumbers[i] = false;
-            }
+            usedNumbers[i] = false;
         }
     }
 
@@ -299,14 +297,10 @@ contract BingoGame is Pausable, Ownable {
         }
         uint256 middle_no = BOARD_SIZE/2;
         // Fill the card numbers, placing 0 in the middle
-        for (uint256 i = 0; i < middle_no; i++) {
+        for (uint256 i = 0; i < BOARD_SIZE; i++) {
             cardNumbers[i] = numberPool[i];
         }
         cardNumbers[middle_no] = 0; // Middle space
-        for (uint256 i = middle_no; i < BOARD_SIZE-1; i++) {
-            cardNumbers[i + 1] = numberPool[i];
-        }
-        
         return cardNumbers;
     }
 
