@@ -44,15 +44,21 @@ impl ChainState {
 abigen!(
     BingoGame,
     r#"[
-        function assignCard(address player, uint8[25] cardNumbers) external
+        function assignCard(address player, uint256 randomSeed) external returns (uint32[25])
         function getCurrentGameState() external view returns (uint256 startTime, uint256 lastDrawTime, uint256 numberCount, uint256[] drawnNumbers, bool isEnded, uint256 playerCount, bool isStarted)
+        function getPlayerCards(address player) external view returns (uint32[25] storedNumbers)
     ]"#
 );
 
 #[derive(Debug, Serialize)]
 struct BingoCard {
-    numbers: [[u8; 5]; 5], // 5x5 Bingo card
+    numbers: [u32; 25], // 5x5 Bingo card
     transaction_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UserCard {
+    numbers: [u32; 25],
 }
 
 #[derive(Debug, Serialize)]
@@ -176,20 +182,10 @@ async fn purchase_card(
                     data: None,
                 }));
             }
-            // let mut rng = StdRng::from_entropy();
-            // let mut card_numbers = [0u8; 25];
-            // for i in 0..25 {
-            //     card_numbers[i] = rng.gen_range(1..=75);
-            // }
-            // card_numbers[12] = 0; // Mark the center number as free
+            let mut rng = StdRng::from_entropy();
+            let random_number: U256 = U256::from(rng.gen::<u64>());
 
-            // Fixed value for card_numbers
-            let card_numbers: [u8; 25] = [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25,
-            ]; // Example values, adjust as needed
-
-            println!("Card numbers: {:?}", card_numbers);
+            println!("random numbers: {:?}", random_number);
 
             // Parse the wallet address from the request
             let parsed_address = request.walletAddress.parse::<Address>();
@@ -207,26 +203,33 @@ async fn purchase_card(
             match state
                 .app_state
                 .contract
-                .assign_card(*wallet_address, card_numbers)
+                .assign_card(*wallet_address, random_number)
                 .send()
                 .await
             {
                 Ok(tx) => {
                     match tx.await {
                         Ok(receipt) => {
-                            // Convert the array of 25 numbers into a 5x5 grid
-                            let numbers = parse_card_numbers(receipt.as_ref().unwrap());
+                            // Extract the card numbers from the receipt logs
+                            let receipt = receipt.ok_or_else(|| {
+                                eprintln!("Transaction receipt is None");
+                                Status::InternalServerError
+                            })?;
+                            let card_numbers = match extract_card_numbers_from_receipt(&receipt) {
+                                Ok(numbers) => numbers,
+                                Err(e) => {
+                                    eprintln!("Failed to extract card numbers: {}", e);
+                                    return Err(Status::InternalServerError);
+                                }
+                            };
 
                             Ok(Json(ApiResponse {
                                 success: true,
                                 message: "Bingo card purchased and assigned successfully"
                                     .to_string(),
                                 data: Some(BingoCard {
-                                    numbers,
-                                    transaction_hash: format!(
-                                        "{:?}",
-                                        receipt.unwrap().transaction_hash
-                                    ),
+                                    numbers: card_numbers,
+                                    transaction_hash: format!("{:?}", receipt.transaction_hash),
                                 }),
                             }))
                         }
@@ -252,6 +255,67 @@ async fn purchase_card(
     }
 }
 
+#[post("/card/get/<chain_name>", format = "json", data = "<request>")]
+async fn get_card(
+    chain_name: String,
+    request: Json<PurchaseCardRequest>,
+    chain_states: &State<Arc<Mutex<HashMap<String, ChainState>>>>,
+) -> Result<Json<ApiResponse<UserCard>>, Status> {
+    let chain_states = chain_states.lock().await;
+    println!("Chain states: {:?}", chain_states);
+    let state = chain_states.get(&chain_name).ok_or(Status::NotFound)?;
+    print!("State: {:?}", state);
+    // Parse the wallet address from the request
+    let parsed_address = request.walletAddress.parse::<Address>();
+    let wallet_address = match &parsed_address {
+        Ok(address) => address,
+        Err(_) => {
+            eprintln!("Failed to parse wallet address: {}", request.walletAddress);
+            return Err(Status::BadRequest);
+        }
+    };
+    match state
+        .app_state
+        .contract
+        .get_player_cards(*wallet_address)
+        .call()
+        .await
+    {
+        Ok(cards) => {
+            let cards: [u32; 25] = cards;
+            println!("cards: {:?}", cards);
+            Ok(Json(ApiResponse {
+                success: true,
+                message: "Get Card".to_string(),
+                data: Some(UserCard { numbers: cards }),
+            }))
+        }
+        Err(e) => Ok(Json(ApiResponse {
+            success: false,
+            message: format!("Failed to get player cards: {}", e),
+            data: None,
+        })),
+    }
+    // match state
+    //     .app_state
+    //     .contract
+    //     .get_player_cards(*wallet_address)
+    //     .call()
+    //     .await
+    // {
+    //     Ok(numbers) => Ok(Json(ApiResponse {
+    //         success: true,
+    //         message: "Get Card".to_string(),
+    //         data: Some(UserCard { numbers }),
+    //     })),
+    //     Err(e) => Ok(Json(ApiResponse {
+    //         success: false,
+    //         message: format!("Failed to check game state: {}", e),
+    //         data: None,
+    //     })),
+    // }
+}
+
 // Helper function to format timestamps
 fn format_timestamp(timestamp: u64) -> String {
     use chrono::{DateTime, NaiveDateTime, Utc};
@@ -274,28 +338,37 @@ fn format_game_status_message(state: &GameState) -> String {
     }
 }
 
-// Helper function to parse card numbers from transaction receipt
-fn parse_card_numbers(receipt: &TransactionReceipt) -> [[u8; 5]; 5] {
-    let mut card = [[0u8; 5]; 5];
+fn extract_card_numbers_from_receipt(receipt: &TransactionReceipt) -> Result<[u32; 25], String> {
     if let Some(log) = receipt.logs.get(0) {
         // Extract numbers from log data
         // This implementation depends on how your contract emits the card numbers
         // You'll need to adjust this based on your specific contract implementation
         if log.topics.len() > 1 {
-            let numbers: Vec<u8> = log.topics[1].as_bytes().chunks(1).map(|b| b[0]).collect();
-
-            // Convert flat array to 5x5 grid
-            for (i, chunk) in numbers.chunks(5).enumerate() {
-                if i < 5 {
-                    for (j, &num) in chunk.iter().enumerate() {
-                        if j < 5 {
-                            card[i][j] = num;
-                        }
-                    }
-                }
+            let numbers: Vec<u32> = log.topics[1]
+                .as_bytes()
+                .chunks(1)
+                .map(|b| b[0] as u32)
+                .collect();
+            if numbers.len() == 25 {
+                let mut card_numbers = [0u32; 25];
+                card_numbers.copy_from_slice(&numbers);
+                return Ok(card_numbers);
             }
         }
     }
+    Err("Failed to extract card numbers from receipt".to_string())
+}
+
+fn parse_card_numbers(numbers: &[u8; 25]) -> [[u8; 5]; 5] {
+    let mut card = [[0u8; 5]; 5];
+
+    // Convert flat array to 5x5 grid
+    for (i, chunk) in numbers.chunks(5).enumerate() {
+        for (j, &num) in chunk.iter().enumerate() {
+            card[i][j] = num;
+        }
+    }
+
     card
 }
 
@@ -337,5 +410,5 @@ async fn rocket() -> _ {
     // Launch Rocket
     rocket::build()
         .manage(chain_states)
-        .mount("/api", routes![get_game_state, purchase_card])
+        .mount("/api", routes![get_game_state, purchase_card, get_card])
 }
