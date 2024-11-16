@@ -19,7 +19,8 @@ contract BingoGame is Pausable, Ownable {
     // Constants
     uint256 public constant DRAW_INTERVAL = 5 seconds;
     uint256 public constant MIN_PLAYERS = 1;
-    uint256 public constant BOARD_SIZE = 25;
+    uint256 public constant N_SIZE = 5;
+    uint256 public constant BOARD_SIZE = N_SIZE*N_SIZE;
     uint256 public constant MAX_NUMBER = 99;
 
     // Storage
@@ -227,10 +228,10 @@ contract BingoGame is Pausable, Ownable {
     /// @return bool Whether the card has won
     function _verifyWin(BingoCard memory card) public view returns (bool) {
         // Check rows
-        for (uint256 i = 0; i < 5; i++) {
+        for (uint256 i = 0; i < N_SIZE; i++) {
             bool rowWin = true;
-            for (uint256 j = 0; j < 5; j++) {
-                if (!usedNumbers[card.numbers[i * 5 + j]]) {
+            for (uint256 j = 0; j < N_SIZE; j++) {
+                if (!usedNumbers[card.numbers[i * N_SIZE + j]]) {
                     rowWin = false;
                     break;
                 }
@@ -239,10 +240,10 @@ contract BingoGame is Pausable, Ownable {
         }
         
         // Check columns
-        for (uint256 i = 0; i < 5; i++) {
+        for (uint256 i = 0; i < N_SIZE; i++) {
             bool colWin = true;
-            for (uint256 j = 0; j < 5; j++) {
-                if (!usedNumbers[card.numbers[j * 5 + i]]) {
+            for (uint256 j = 0; j < N_SIZE; j++) {
+                if (!usedNumbers[card.numbers[j * N_SIZE + i]]) {
                     colWin = false;
                     break;
                 }
@@ -253,11 +254,11 @@ contract BingoGame is Pausable, Ownable {
         // Check diagonals
         bool diag1Win = true;
         bool diag2Win = true;
-        for (uint256 i = 0; i < 5; i++) {
-            if (!usedNumbers[card.numbers[i * 5 + i]]) {
+        for (uint256 i = 0; i < N_SIZE; i++) {
+            if (!usedNumbers[card.numbers[i * N_SIZE + i]]) {
                 diag1Win = false;
             }
-            if (!usedNumbers[card.numbers[i * 5 + (4 - i)]]) {
+            if (!usedNumbers[card.numbers[i * N_SIZE + (N_SIZE-1 - i)]]) {
                 diag2Win = false;
             }
             if (!diag1Win && !diag2Win) break; // Early exit if both diagonals fail
