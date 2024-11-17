@@ -163,12 +163,12 @@ abigen!(
         function getCurrentGameState() external view returns (uint256 startTime, uint256 lastDrawTime, uint256 numberCount, uint256[] drawnNumbers, bool isEnded, uint256 playerCount, bool isStarted)
         function getPlayerCards(address player) external view returns (uint32[25] storedNumbers)
         function isGameStarted() external view returns (bool)
+        function claimWin(address player) external returns (bool)
     ]"#
 );
 
 #[derive(Debug, Serialize)]
 struct BingoCard {
-    numbers: [u32; 25], // 5x5 Bingo card
     transaction_hash: String,
 }
 
@@ -308,8 +308,6 @@ async fn purchase_card(
                 }
             };
 
-            println!("Wallet address: {:?}", wallet_address);
-
             // Assign the card to the given address
             match state
                 .app_state
@@ -318,39 +316,26 @@ async fn purchase_card(
                 .send()
                 .await
             {
-                Ok(tx) => {
-                    match tx.await {
-                        Ok(receipt) => {
-                            // Extract the card numbers from the receipt logs
-                            let receipt = receipt.ok_or_else(|| {
-                                eprintln!("Transaction receipt is None");
-                                Status::InternalServerError
-                            })?;
-                            let card_numbers = match extract_card_numbers_from_receipt(&receipt) {
-                                Ok(numbers) => numbers,
-                                Err(e) => {
-                                    eprintln!("Failed to extract card numbers: {}", e);
-                                    return Err(Status::InternalServerError);
-                                }
-                            };
-
-                            Ok(Json(ApiResponse {
-                                success: true,
-                                message: "Bingo card purchased and assigned successfully"
-                                    .to_string(),
-                                data: Some(BingoCard {
-                                    numbers: card_numbers,
-                                    transaction_hash: format!("{:?}", receipt.transaction_hash),
-                                }),
-                            }))
-                        }
-                        Err(e) => Ok(Json(ApiResponse {
-                            success: false,
-                            message: format!("Transaction failed: {}", e),
-                            data: None,
-                        })),
+                Ok(tx) => match tx.await {
+                    Ok(receipt) => {
+                        let receipt = receipt.ok_or_else(|| {
+                            eprintln!("Transaction receipt is None");
+                            Status::InternalServerError
+                        })?;
+                        Ok(Json(ApiResponse {
+                            success: true,
+                            message: "Bingo card purchased and assigned successfully".to_string(),
+                            data: Some(BingoCard {
+                                transaction_hash: format!("{:?}", receipt.transaction_hash),
+                            }),
+                        }))
                     }
-                }
+                    Err(e) => Ok(Json(ApiResponse {
+                        success: false,
+                        message: format!("Transaction failed: {}", e),
+                        data: None,
+                    })),
+                },
                 Err(e) => Ok(Json(ApiResponse {
                     success: false,
                     message: format!("Failed to send transaction: {}", e),
@@ -407,32 +392,49 @@ async fn get_card(
             data: None,
         })),
     }
-    // match state
-    //     .app_state
-    //     .contract
-    //     .get_player_cards(*wallet_address)
-    //     .call()
-    //     .await
-    // {
-    //     Ok(numbers) => Ok(Json(ApiResponse {
-    //         success: true,
-    //         message: "Get Card".to_string(),
-    //         data: Some(UserCard { numbers }),
-    //     })),
-    //     Err(e) => Ok(Json(ApiResponse {
-    //         success: false,
-    //         message: format!("Failed to check game state: {}", e),
-    //         data: None,
-    //     })),
-    // }
 }
 
-// Helper function to format timestamps
-fn format_timestamp(timestamp: u64) -> String {
-    use chrono::{DateTime, NaiveDateTime, Utc};
-    let naive = NaiveDateTime::from_timestamp_opt(timestamp as i64, 0).unwrap_or_default();
-    let datetime: DateTime<Utc> = DateTime::from_naive_utc_and_offset(naive, Utc);
-    datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+#[post("/card/challenge/<chain_name>", format = "json", data = "<request>")]
+async fn challenge(
+    chain_name: String,
+    request: Json<PurchaseCardRequest>,
+    chain_states: &State<Arc<Mutex<HashMap<String, ChainState>>>>,
+) -> Result<Json<ApiResponse<bool>>, Status> {
+    let chain_states = chain_states.lock().await;
+    let state = chain_states.get(&chain_name).ok_or(Status::NotFound)?;
+    let parsed_address = request.walletAddress.parse::<Address>();
+    let wallet_address = match &parsed_address {
+        Ok(address) => address,
+        Err(_) => {
+            eprintln!("Failed to parse wallet address: {}", request.walletAddress);
+            return Err(Status::BadRequest);
+        }
+    };
+    match state
+        .app_state
+        .contract
+        .claim_win(*wallet_address)
+        .send()
+        .await
+    {
+        Ok(tx) => match tx.await {
+            Ok(_) => Ok(Json(ApiResponse {
+                success: true,
+                message: "You won!".to_string(),
+                data: Some(true),
+            })),
+            Err(e) => Ok(Json(ApiResponse {
+                success: false,
+                message: format!("Invalid win {}", e),
+                data: Some(false),
+            })),
+        },
+        Err(e) => Ok(Json(ApiResponse {
+            success: false,
+            message: format!("Invalid win {}", e),
+            data: Some(false),
+        })),
+    }
 }
 
 // Helper function to format game status message
@@ -525,7 +527,10 @@ async fn rocket() -> _ {
     rocket::build()
         .manage(chain_states)
         .attach(cors.to_cors().unwrap())
-        .mount("/api", routes![get_game_state, purchase_card, get_card])
+        .mount(
+            "/api",
+            routes![get_game_state, purchase_card, get_card, challenge],
+        )
         .attach(fairing)
 }
 
