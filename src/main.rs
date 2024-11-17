@@ -14,6 +14,7 @@ use rocket::http::Status;
 use rocket::{get, launch, post, routes, serde::json::Json, State};
 use rocket_cors::{AllowedOrigins, CorsOptions};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{str::FromStr, sync::Arc};
@@ -299,7 +300,14 @@ async fn purchase_card(
                 }));
             }
             let mut rng = StdRng::from_entropy();
-            let random_number: U256 = U256::from(rng.gen::<u64>());
+            let rnumber = rng.gen::<u64>();
+
+            // Hash the random number to get a byte array of 32 bytes
+            let mut hasher = Sha256::new();
+            hasher.update(rnumber.to_le_bytes());
+            let result = hasher.finalize();
+            // Convert the hashed byte array to U256
+            let random_number = U256::from_big_endian(&result);
 
             println!("random numbers: {:?}", random_number);
 

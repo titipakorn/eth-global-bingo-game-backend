@@ -42,6 +42,7 @@ contract BingoGame is Pausable, Ownable {
     // State variables
     GameState public games;
     mapping(address => BingoCard) public cards;
+    address[] private players;
     mapping(address => bool) private gamePlayers;
     uint256 private gamePlayerCount;
     mapping(uint256 => bool) private usedNumbers;
@@ -77,16 +78,19 @@ contract BingoGame is Pausable, Ownable {
         newGame.startTime = block.timestamp;
         newGame.lastDrawTime = block.timestamp;
         newGame.gameEnded = false;
-        newGame.drawnNumbers = new uint256[](1);
-        newGame.drawnNumbers[0] = 0;
-        _resetUsedNumbers();
-        usedNumbers[0] = true;
         emit GameStarted(block.timestamp);
     }
 
     function _resetUsedNumbers() private {
         for(uint256 i = 1; i <= MAX_NUMBER; i++) {
             usedNumbers[i] = false;
+        }
+    }
+
+    function _resetCards() private {
+        for(uint256 i = 1; i <= players.length; i++) {
+            delete cards[players[i]];
+            gamePlayers[players[i]] = false;
         }
     }
 
@@ -110,16 +114,12 @@ contract BingoGame is Pausable, Ownable {
             // Swap current position with randomly selected position
             (numberPool[i], numberPool[swapIndex]) = (numberPool[swapIndex], numberPool[i]);
         }
-
+    
         // Fill the card numbers, placing 0 in the middle
         for (uint256 i = 0; i < BOARD_SIZE; i++) {
-            if (i == BOARD_SIZE/2) {
-                cardNumbers[i] = 0; // Middle space
-            } else {
-                cardNumbers[i] = numberPool[i < BOARD_SIZE/2 ? i : i-1];
-            }
+            cardNumbers[i] = numberPool[i];
         }
-        
+        cardNumbers[BOARD_SIZE/2] = 0; // Middle space
         return cardNumbers;
     }
 
@@ -138,7 +138,7 @@ contract BingoGame is Pausable, Ownable {
         }
 
         uint8[BOARD_SIZE] memory cardNumbers = generateCardNumbers(randomSeed);
-        
+        players.push(player);
         cards[player] = BingoCard({
             owner: player,
             numbers: cardNumbers,
@@ -213,8 +213,13 @@ contract BingoGame is Pausable, Ownable {
         if (game.gameEnded) {
             revert GameNotInProgress();
         }
-
+        _resetCards();
+        gamePlayerCount=0;
+        _resetUsedNumbers();
         game.gameEnded = true;
+        game.drawnNumbers = new uint256[](1);
+        game.drawnNumbers[0] = 0;
+        usedNumbers[0] = true;
         emit GameEnded(block.timestamp);
     }
 
