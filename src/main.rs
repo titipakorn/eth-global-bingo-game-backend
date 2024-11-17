@@ -10,9 +10,8 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Method;
-use rocket::http::{Header, Status};
-use rocket::Request;
-use rocket::{get, launch, post, response::Response, routes, serde::json::Json, State};
+use rocket::http::Status;
+use rocket::{get, launch, post, routes, serde::json::Json, State};
 use rocket_cors::{AllowedOrigins, CorsOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,6 +23,12 @@ use tokio::time::{sleep, Duration};
 // Background task control structure
 pub struct BackgroundSubmitter {
     is_running: Arc<AtomicBool>,
+}
+
+impl Default for BackgroundSubmitter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BackgroundSubmitter {
@@ -439,9 +444,9 @@ async fn challenge(
 
 // Helper function to format game status message
 fn format_game_status_message(state: &GameState) -> String {
-    if (!state.is_started) {
+    if !state.is_started {
         "Game has not started yet".to_string()
-    } else if (state.is_ended) {
+    } else if state.is_ended {
         "Game has ended".to_string()
     } else {
         format!(
@@ -449,27 +454,6 @@ fn format_game_status_message(state: &GameState) -> String {
             state.player_count, state.drawn_numbers_count
         )
     }
-}
-
-fn extract_card_numbers_from_receipt(receipt: &TransactionReceipt) -> Result<[u32; 25], String> {
-    if let Some(log) = receipt.logs.get(0) {
-        // Extract numbers from log data
-        // This implementation depends on how your contract emits the card numbers
-        // You'll need to adjust this based on your specific contract implementation
-        if log.topics.len() > 1 {
-            let numbers: Vec<u32> = log.topics[1]
-                .as_bytes()
-                .chunks(1)
-                .map(|b| b[0] as u32)
-                .collect();
-            if numbers.len() == 25 {
-                let mut card_numbers = [0u32; 25];
-                card_numbers.copy_from_slice(&numbers);
-                return Ok(card_numbers);
-            }
-        }
-    }
-    Err("Failed to extract card numbers from receipt".to_string())
 }
 
 #[launch]
