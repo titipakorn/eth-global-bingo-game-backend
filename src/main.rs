@@ -159,7 +159,7 @@ abigen!(
     BingoGame,
     r#"[
         function submitDrawnNumber(uint256 number) external
-        function assignCard(address player, uint256 randomSeed) external returns (uint32[25])
+        function assignCard(address player, uint256 randomSeed) external
         function getCurrentGameState() external view returns (uint256 startTime, uint256 lastDrawTime, uint256 numberCount, uint256[] drawnNumbers, bool isEnded, uint256 playerCount, bool isStarted)
         function getPlayerCards(address player) external view returns (uint32[25] storedNumbers)
         function isGameStarted() external view returns (bool)
