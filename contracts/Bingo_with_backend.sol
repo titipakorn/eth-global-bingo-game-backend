@@ -106,15 +106,15 @@ contract BingoGame is Pausable, Ownable {
             numberPool[i] = uint8(i + 1);
         }
         
-        // Use each byte of the random seed to shuffle the first 24 positions
+       // Use each byte of the random seed to shuffle the first 24 positions
         for (uint256 i = 0; i < BOARD_SIZE-1; i++) {
-            
-            uint8 swapIndex = uint8((uint8(randomSeed >> (i * 8)) % MAX_NUMBER) + i);
+            uint256 shiftAmount = (i * 8) % 256;
+            uint8 swapIndex = uint8((uint256(uint8(randomSeed >> shiftAmount)) % (MAX_NUMBER - i)) + i);
             
             // Swap current position with randomly selected position
             (numberPool[i], numberPool[swapIndex]) = (numberPool[swapIndex], numberPool[i]);
         }
-    
+        
         // Fill the card numbers, placing 0 in the middle
         for (uint256 i = 0; i < BOARD_SIZE; i++) {
             cardNumbers[i] = numberPool[i];
